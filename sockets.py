@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 import flask
-from flask import Flask, request
+from flask import Flask, request,redirect, jsonify, Response
 from flask_sockets import Sockets
 import gevent
 from gevent import queue
@@ -25,6 +25,21 @@ import os
 app = Flask(__name__)
 sockets = Sockets(app)
 app.debug = True
+
+
+allClients = []
+
+def sendToAllClients(obj):
+    data = json.dumps(obj)
+    for c in allClients:
+        c.put(data)
+class WebClient:
+    def __init__(self) -> None:
+        self.q = queue.Queue()
+    def put(self, data):
+        self.q.put_nowait(data)
+    def get(self):
+        return self.q.get()
 
 class World:
     def __init__(self):
@@ -62,26 +77,42 @@ class World:
 myWorld = World()        
 
 def set_listener( entity, data ):
-    ''' do something with the update ! '''
+    sendToAllClients({ entity: data})
 
 myWorld.add_set_listener( set_listener )
         
 @app.route('/')
 def hello():
     '''Return something coherent here.. perhaps redirect to /static/index.html '''
-    return None
+    return redirect("/static/index.html", code=301)
 
 def read_ws(ws,client):
     '''A greenlet function that reads from the websocket and updates the world'''
-    # XXX: TODO IMPLEMENT ME
-    return None
+    while True:
+        msg = ws.receive()
+        if msg is None:
+            break
+        jsonData = json.loads(msg)
+        for e, d in jsonData.items():
+            myWorld.set(e,d)
 
 @sockets.route('/subscribe')
 def subscribe_socket(ws):
     '''Fufill the websocket URL of /subscribe, every update notify the
        websocket and read updates from the websocket '''
-    # XXX: TODO IMPLEMENT ME
-    return None
+    print("Subscribed")
+    c = WebClient()
+    allClients.append(c)
+    e = gevent.spawn(read_ws, ws, c)
+    try:
+        while True:
+            msg = c.get()
+            ws.send(msg)
+    except Exception as e:
+        print("error", e)
+    finally:
+        allClients.remove(c)
+        gevent.kill(e)
 
 
 # I give this to you, this is how you get the raw body/data portion of a post in flask
@@ -99,23 +130,28 @@ def flask_post_json():
 @app.route("/entity/<entity>", methods=['POST','PUT'])
 def update(entity):
     '''update the entities via this interface'''
-    return None
+    updatedEntity = flask_post_json()
+    for k, v in updatedEntity.items():
+        myWorld.update(entity, k, v)
+    return jsonify(myWorld.get(entity))
 
 @app.route("/world", methods=['POST','GET'])    
 def world():
     '''you should probably return the world here'''
-    return None
+    w = myWorld.world()
+    return jsonify(w)
 
 @app.route("/entity/<entity>")    
 def get_entity(entity):
     '''This is the GET version of the entity interface, return a representation of the entity'''
-    return None
+    return jsonify(myWorld.get(entity))
 
 
 @app.route("/clear", methods=['POST','GET'])
 def clear():
     '''Clear the world out!'''
-    return None
+    myWorld.clear()
+    return Response(None, 200)
 
 
 
